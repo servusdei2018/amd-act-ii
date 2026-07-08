@@ -13,9 +13,6 @@ export VLLM_USE_MODELSCOPE=False
 echo "[INFO] Aligning virtual environment using uv..."
 uv sync --frozen
 
-echo "[INFO] Installing ROCm vLLM wheel..."
-uv pip install "https://wheels.vllm.ai/rocm/vllm-0.16.0-cp314-cp314-manylinux_2_35_x86_64.whl"
-
 echo "[INFO] Starting vLLM OpenAI compatibility API server on port 8000..."
 exec uv run python3 -m vllm.entrypoints.openai.api_server \
     --model google/gemma-4-31b-it \
