@@ -15,9 +15,7 @@ uv sync --frozen
 
 echo "[INFO] Starting vLLM OpenAI compatibility API server on port 8000..."
 exec uv run python3 -m vllm.entrypoints.openai.api_server \
-    --model google/gemma-4-31b-it \
-    --quantization fp8 \
-    --device rocm \
+    --model cyankiwi/gemma-4-31B-it-AWQ-4bit \
     --gpu-memory-utilization 0.90 \
     --max-model-len 32768 \
     --max-num-seqs 8 \

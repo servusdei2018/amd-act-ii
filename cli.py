@@ -159,7 +159,7 @@ def main() -> None:
         try:
             # Read input from the user
             user_input = input(f"{Colors.BLUE}{Colors.BOLD}User > {Colors.RESET}")
-        except KeyboardInterrupt, EOFError:
+        except (KeyboardInterrupt, EOFError):
             print(f"\n{Colors.CYAN}Exiting chat client. Goodbye!{Colors.RESET}")
             break
 

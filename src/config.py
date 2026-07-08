@@ -2,7 +2,7 @@ import os
 
 # Backend server vLLM config
 VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
-BACKEND_MODEL: str = os.getenv("BACKEND_MODEL", "google/gemma-4-31b-it")
+BACKEND_MODEL: str = os.getenv("BACKEND_MODEL", "cyankiwi/gemma-4-31B-it-AWQ-4bit")
 
 # Gateway server config
 GATEWAY_HOST: str = os.getenv("GATEWAY_HOST", "0.0.0.0")

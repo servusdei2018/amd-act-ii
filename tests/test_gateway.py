@@ -13,7 +13,7 @@ client = TestClient(app)
 def test_config() -> None:
     """Verify default config properties."""
     assert AGENT_MODEL_NAME == "triduum"
-    assert BACKEND_MODEL == "google/gemma-4-31b-it"
+    assert BACKEND_MODEL == "cyankiwi/gemma-4-31B-it-AWQ-4bit"
 
 
 @pytest.mark.asyncio

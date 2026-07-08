@@ -27,7 +27,7 @@ Execute the server command:
 ./run_server.sh
 ```
 
-This launches the `google/gemma-4-31b-it` model utilizing FP8 quantization, optimized to consume up to 90% GPU memory allocation.
+This launches the `cyankiwi/gemma-4-31B-it-AWQ-4bit` model utilizing AWQ 4-bit quantization, optimized to consume up to 90% GPU memory allocation.
 
 ## Verifying Server Status
 

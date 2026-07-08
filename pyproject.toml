@@ -3,13 +3,21 @@ name = "bracyn-act-ii"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = "==3.14.*"
+requires-python = "==3.12.*"
 dependencies = [
     "openai>=1.0.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "httpx>=0.27.0",
     "vllm>=0.22.1",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "amdsmi",
+    "amd-aiter",
+    "flash-attn",
+    "triton",
+    "triton-kernels",
 ]
 
 [dependency-groups]
@@ -23,6 +31,23 @@ dev = [
 
 [tool.uv]
 package = false
+environments = ["sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+name = "vllm-rocm"
+url = "https://wheels.vllm.ai/rocm"
+explicit = true
+
+[tool.uv.sources]
+vllm = { index = "vllm-rocm" }
+torch = { index = "vllm-rocm" }
+torchvision = { index = "vllm-rocm" }
+torchaudio = { index = "vllm-rocm" }
+amdsmi = { index = "vllm-rocm" }
+amd-aiter = { index = "vllm-rocm" }
+flash-attn = { index = "vllm-rocm" }
+triton = { index = "vllm-rocm" }
+triton-kernels = { index = "vllm-rocm" }
 
 [tool.mypy]
 strict = true
