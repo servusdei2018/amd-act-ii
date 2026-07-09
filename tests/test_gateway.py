@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 from openai.types.chat import ChatCompletionMessageParam
 
-from src.config import AGENT_MODEL_NAME, BACKEND_MODEL
+from src.config import (
+    AGENT_MODEL_NAME,
+    BACKEND_MODEL,
+    CONSENSUS_AXES,
+    CONSENSUS_AXIS_PROMPTS,
+    SYNTHESIS_SYSTEM_PROMPT,
+)
 from src.agent.harness import AgenticHarness
 from src.server.app import app
 
@@ -117,9 +123,6 @@ async def test_agentic_harness_hesitant() -> None:
     consensus_resp.choices = [consensus_choice]
     consensus_resp.model = BACKEND_MODEL
 
-    static_responses = [fork1_resp, fork2_resp, fork3_resp, consensus_resp]
-    static_iter = iter(static_responses)
-
     async def mock_create(*args: Any, **kwargs: Any) -> Any:
         if kwargs.get("stream"):
 
@@ -129,7 +132,36 @@ async def test_agentic_harness_hesitant() -> None:
 
             return gen()
         else:
-            return next(static_iter)
+            messages = kwargs.get("messages", [])
+            system_content = ""
+            if messages and messages[0].get("role") == "system":
+                system_content = messages[0].get("content", "")
+
+            if system_content == SYNTHESIS_SYSTEM_PROMPT:
+                return consensus_resp
+
+            for axis_name in CONSENSUS_AXES:
+                if system_content == CONSENSUS_AXIS_PROMPTS[axis_name]:
+                    axis_choice = MagicMock()
+                    axis_choice.message.content = f"Mocked {axis_name} evaluation"
+                    axis_resp = MagicMock()
+                    axis_resp.choices = [axis_choice]
+                    return axis_resp
+
+            temp = kwargs.get("temperature")
+            if temp == 0.1:
+                return fork1_resp
+            elif temp == 0.5:
+                return fork2_resp
+            elif temp == 0.8:
+                return fork3_resp
+
+            # Fallback
+            fallback_choice = MagicMock()
+            fallback_choice.message.content = "Fallback"
+            fallback_resp = MagicMock()
+            fallback_resp.choices = [fallback_choice]
+            return fallback_resp
 
     mock_completions.create.side_effect = mock_create
 
@@ -140,7 +172,7 @@ async def test_agentic_harness_hesitant() -> None:
 
     result = await harness.generate_completion(messages=messages)
 
-    assert mock_completions.create.call_count == 5
+    assert mock_completions.create.call_count == 8
     assert result.model == AGENT_MODEL_NAME
     assert result.choices[0].message.content == "Consensus answer"
 
@@ -216,9 +248,6 @@ async def test_agentic_harness_streaming_hesitant() -> None:
     consensus_resp.choices = [consensus_choice]
     consensus_resp.model = BACKEND_MODEL
 
-    static_responses = [fork1_resp, fork2_resp, fork3_resp, consensus_resp]
-    static_iter = iter(static_responses)
-
     async def mock_create(*args: Any, **kwargs: Any) -> Any:
         if kwargs.get("stream"):
 
@@ -228,7 +257,36 @@ async def test_agentic_harness_streaming_hesitant() -> None:
 
             return gen()
         else:
-            return next(static_iter)
+            messages = kwargs.get("messages", [])
+            system_content = ""
+            if messages and messages[0].get("role") == "system":
+                system_content = messages[0].get("content", "")
+
+            if system_content == SYNTHESIS_SYSTEM_PROMPT:
+                return consensus_resp
+
+            for axis_name in CONSENSUS_AXES:
+                if system_content == CONSENSUS_AXIS_PROMPTS[axis_name]:
+                    axis_choice = MagicMock()
+                    axis_choice.message.content = f"Mocked {axis_name} evaluation"
+                    axis_resp = MagicMock()
+                    axis_resp.choices = [axis_choice]
+                    return axis_resp
+
+            temp = kwargs.get("temperature")
+            if temp == 0.1:
+                return fork1_resp
+            elif temp == 0.5:
+                return fork2_resp
+            elif temp == 0.8:
+                return fork3_resp
+
+            # Fallback
+            fallback_choice = MagicMock()
+            fallback_choice.message.content = "Fallback"
+            fallback_resp = MagicMock()
+            fallback_resp.choices = [fallback_choice]
+            return fallback_resp
 
     mock_completions.create.side_effect = mock_create
 
@@ -241,7 +299,7 @@ async def test_agentic_harness_streaming_hesitant() -> None:
     async for chunk in harness.generate_stream(messages=messages):
         chunks_received.append(chunk)
 
-    assert mock_completions.create.call_count == 5
+    assert mock_completions.create.call_count == 8
     assert len(chunks_received) > 0
     assert chunks_received[-1].choices[0].finish_reason == "stop"
     assert (

@@ -21,7 +21,9 @@ from src.config import (
     COT_FORK_TEMPERATURES,
     COT_SYSTEM_PROMPT,
     COT_FORK_PROMPTS,
-    CONSENSUS_SYSTEM_PROMPT,
+    CONSENSUS_AXES,
+    CONSENSUS_AXIS_PROMPTS,
+    SYNTHESIS_SYSTEM_PROMPT,
 )
 from src.logging_config import logger
 
@@ -164,15 +166,16 @@ class AgenticHarness:
         )
         return content
 
-    async def _run_consensus(
+    async def _run_axis(
         self,
+        axis_name: str,
         original_messages: list[ChatCompletionMessageParam],
         fork_responses: list[str],
         **kwargs: Any,
-    ) -> Any:
-        """Invokes the Consensus Agent to evaluate and synthesize a final verified answer."""
+    ) -> str:
+        """Runs a single specialized consensus axis evaluation."""
         logger.info(
-            f"[{AGENT_MODEL_NAME.upper()} - Consensus] Synthesizing consensus from forks..."
+            f"[{AGENT_MODEL_NAME.upper()} - Consensus Axis - {axis_name}] Evaluating pathways..."
         )
 
         history_str = ""
@@ -183,29 +186,98 @@ class AgenticHarness:
 
         candidates_str = ""
         for i, resp in enumerate(fork_responses):
-            candidates_str += f"--- Candidate {chr(65 + i)} ---\n{resp}\n\n"
+            candidates_str += f"--- Pathway {chr(65 + i)} ---\n{resp}\n\n"
 
         user_content = (
             f"Original Conversation History:\n{history_str}\n"
-            f"Here are the three generated candidate reasoning paths and answers:\n\n{candidates_str}"
-            f"Please evaluate them, resolve any errors or conflicts, and output only the final verified answer."
+            f"Here are the three generated candidate reasoning pathways:\n\n{candidates_str}"
+            f"Please perform your evaluation based on your role constraints and output the result."
         )
 
-        consensus_messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": CONSENSUS_SYSTEM_PROMPT},
+        messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": CONSENSUS_AXIS_PROMPTS[axis_name]},
             {"role": "user", "content": user_content},
         ]
 
-        consensus_kwargs = kwargs.copy()
-        consensus_kwargs["model"] = BACKEND_MODEL
-        consensus_kwargs["stream"] = False
-        consensus_kwargs["temperature"] = 0.0  # Deterministic synthesis
+        axis_kwargs = kwargs.copy()
+        axis_kwargs["model"] = BACKEND_MODEL
+        axis_kwargs["stream"] = False
+        axis_kwargs["temperature"] = 0.0  # Deterministic evaluation
 
         response = await self.client.chat.completions.create(
-            messages=consensus_messages, **consensus_kwargs
+            messages=messages, **axis_kwargs
+        )
+        content = response.choices[0].message.content or ""
+        logger.info(
+            f"[{AGENT_MODEL_NAME.upper()} - Consensus Axis - {axis_name}] Evaluation complete. "
+            f"Response length: {len(content)} chars."
+        )
+        return content
+
+    async def _run_consensus(
+        self,
+        original_messages: list[ChatCompletionMessageParam],
+        fork_responses: list[str],
+        **kwargs: Any,
+    ) -> Any:
+        """Invokes the Consensus Agent to evaluate and synthesize a final verified answer."""
+        logger.info(
+            f"[{AGENT_MODEL_NAME.upper()} - Consensus] Starting multi-axis evaluations..."
+        )
+
+        # Run the consensus axis tasks in parallel
+        tasks = [
+            self._run_axis(axis, original_messages, fork_responses, **kwargs)
+            for axis in CONSENSUS_AXES
+        ]
+        axis_results = await asyncio.gather(*tasks)
+
+        # Map axis name to its result
+        axis_evaluations = dict(zip(CONSENSUS_AXES, axis_results))
+
+        logger.info(
+            f"[{AGENT_MODEL_NAME.upper()} - Consensus] Running synthesis stage..."
+        )
+
+        history_str = ""
+        for msg in original_messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            history_str += f"[{role.upper()}]: {content}\n"
+
+        candidates_str = ""
+        for i, resp in enumerate(fork_responses):
+            candidates_str += f"--- Pathway {chr(65 + i)} ---\n{resp}\n\n"
+
+        evals_str = ""
+        for axis_name in CONSENSUS_AXES:
+            eval_content = axis_evaluations[axis_name]
+            evals_str += (
+                f"=== Axis Evaluation ({axis_name.upper()}) ===\n{eval_content}\n\n"
+            )
+
+        synthesis_user_content = (
+            f"Original Conversation History:\n{history_str}\n"
+            f"Candidate Reasoning Pathways:\n\n{candidates_str}"
+            f"Consensus Axis Evaluations:\n\n{evals_str}"
+            f"Please synthesize the final response according to your system prompt instructions."
+        )
+
+        synthesis_messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
+            {"role": "user", "content": synthesis_user_content},
+        ]
+
+        synthesis_kwargs = kwargs.copy()
+        synthesis_kwargs["model"] = BACKEND_MODEL
+        synthesis_kwargs["stream"] = False
+        synthesis_kwargs["temperature"] = 0.0  # Deterministic synthesis
+
+        response = await self.client.chat.completions.create(
+            messages=synthesis_messages, **synthesis_kwargs
         )
         logger.info(
-            f"[{AGENT_MODEL_NAME.upper()} - Consensus] Consensus synthesis complete."
+            f"[{AGENT_MODEL_NAME.upper()} - Consensus] Synthesis stage complete."
         )
         return response
 
