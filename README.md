@@ -1,6 +1,6 @@
 # AMD Act II Hackathon: Local Gemma Agent Pipeline
 
-My submission for the AMD Act II hackathon. Hybrid Token-Efficient Routing Agent track.
+My submission for the AMD Act II hackathon. Unicorn track.
 
 ## Setup and Dependency Locking
 
@@ -43,12 +43,39 @@ The interactive chat client provides a real-time streaming chat experience and s
 
 ## Running via Container (Docker/Podman)
 
-A pre-configured `Dockerfile` is provided to package and deploy the entire stack:
+You can run Triduum Router either by pulling the prebuilt container image from the GitHub Container Registry or by building it locally.
+
+### Option A: Pull the Prebuilt Image (Recommended)
+
+You can pull the official prebuilt image directly from GHCR:
+
+```bash
+podman pull ghcr.io/servusdei2018/amd-act-ii:latest
+```
+
+Then run the container:
+
+```bash
+podman run --name triduum-router -d \
+  -p 8001:8001 \
+  --device=/dev/kfd --device=/dev/dri \
+  --group-add=video --ipc=host \
+  -e HSA_OVERRIDE_GFX_VERSION=11.0.0 \
+  ghcr.io/servusdei2018/amd-act-ii:latest
+```
+
+### Option B: Build the Image Locally
+
+If you make modifications to the source code, you can build the image locally:
 
 ```bash
 podman build -t triduum-stack:latest .
+```
 
-podman run --name triduum-test -d \
+Then run the locally built image:
+
+```bash
+podman run --name triduum-router -d \
   -p 8001:8001 \
   --device=/dev/kfd --device=/dev/dri \
   --group-add=video --ipc=host \
