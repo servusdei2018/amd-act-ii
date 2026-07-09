@@ -3,8 +3,16 @@ import time
 from copy import deepcopy
 from typing import AsyncGenerator, Any, cast
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam, ChatCompletionChunk
-from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessageParam,
+    ChatCompletionChunk,
+)
+from openai.types.chat.chat_completion import (
+    Choice as ChatCompletionChoice,
+)
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice, ChoiceDelta
 from src.config import (
     BACKEND_MODEL,
     AGENT_MODEL_NAME,
@@ -12,6 +20,7 @@ from src.config import (
     PROBE_CERTAINTY_THRESHOLD,
     COT_FORK_TEMPERATURES,
     COT_SYSTEM_PROMPT,
+    COT_FORK_PROMPTS,
     CONSENSUS_SYSTEM_PROMPT,
 )
 from src.logging_config import logger
@@ -28,44 +37,86 @@ class AgenticHarness:
     async def _run_probe(
         self, messages: list[ChatCompletionMessageParam], **kwargs: Any
     ) -> tuple[Any, bool, float]:
-        """Executes a single completion check with logprobs enabled to determine certainty."""
+        """Executes a streaming completion check with logprobs enabled to determine certainty."""
         logger.info(f"[{AGENT_MODEL_NAME.upper()} - Probe] Starting Lean Probe Task...")
 
         probe_kwargs = kwargs.copy()
         probe_kwargs["model"] = BACKEND_MODEL
-        probe_kwargs["stream"] = False
+        probe_kwargs["stream"] = True
         probe_kwargs["logprobs"] = True
+        probe_kwargs["top_logprobs"] = 2
 
-        response = await self.client.chat.completions.create(
+        response_stream = await self.client.chat.completions.create(
             messages=messages, **probe_kwargs
         )
 
-        choice = response.choices[0]
-        avg_logprob = 0.0
-        is_certain = False
+        accumulated_content = []
+        deltas = []
+        is_certain = True
 
-        if choice.logprobs and choice.logprobs.content:
-            logprobs = [
-                t.logprob for t in choice.logprobs.content if t.logprob is not None
-            ]
-            if logprobs:
-                avg_logprob = sum(logprobs) / len(logprobs)
-                if avg_logprob >= PROBE_CERTAINTY_THRESHOLD:
-                    is_certain = True
-                logger.info(
-                    f"[{AGENT_MODEL_NAME.upper()} - Probe] Average logprob: {avg_logprob:.4f} "
-                    f"(threshold: {PROBE_CERTAINTY_THRESHOLD:.4f}). Certainty: {is_certain}"
-                )
-            else:
-                logger.warning(
-                    f"[{AGENT_MODEL_NAME.upper()} - Probe] Logprobs list was empty."
-                )
-        else:
+        async for chunk in response_stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+
+            if choice.delta and choice.delta.content:
+                accumulated_content.append(choice.delta.content)
+
+            if choice.logprobs and choice.logprobs.content:
+                for token_logprob in choice.logprobs.content:
+                    if (
+                        token_logprob.top_logprobs
+                        and len(token_logprob.top_logprobs) >= 2
+                    ):
+                        p1 = token_logprob.top_logprobs[0].logprob
+                        p2 = token_logprob.top_logprobs[1].logprob
+                        if p1 is not None and p2 is not None:
+                            margin = p1 - p2
+                            deltas.append(margin)
+
+            if deltas:
+                avg_delta = sum(deltas) / len(deltas)
+                if avg_delta <= PROBE_CERTAINTY_THRESHOLD:
+                    is_certain = False
+                    logger.info(
+                        f"[{AGENT_MODEL_NAME.upper()} - Probe] Average Top-1 vs Top-2 Logprob Margin: {avg_delta:.4f} "
+                        f"<= {PROBE_CERTAINTY_THRESHOLD:.4f}. Low confidence detected. Instantly halting probe stream after {len(deltas)} tokens."
+                    )
+                    break
+
+        avg_logprob = sum(deltas) / len(deltas) if deltas else 0.0
+
+        if not deltas:
+            is_certain = False
             logger.warning(
-                f"[{AGENT_MODEL_NAME.upper()} - Probe] No logprobs returned from backend."
+                f"[{AGENT_MODEL_NAME.upper()} - Probe] No logprobs returned from backend. Defaulting to uncertain."
             )
 
-        return response, is_certain, avg_logprob
+        probe_response = None
+        if is_certain:
+            content_str = "".join(accumulated_content)
+            logger.info(
+                f"[{AGENT_MODEL_NAME.upper()} - Probe] Probe completed cleanly with high confidence. "
+                f"Average Logprob Margin: {avg_logprob:.4f} (threshold: {PROBE_CERTAINTY_THRESHOLD:.4f})."
+            )
+            probe_response = ChatCompletion(
+                id="chatcmpl-probe-certain",
+                choices=[
+                    ChatCompletionChoice(
+                        finish_reason="stop",
+                        index=0,
+                        message=ChatCompletionMessage(
+                            content=content_str, role="assistant"
+                        ),
+                        logprobs=None,
+                    )
+                ],
+                created=int(time.time()),
+                model=BACKEND_MODEL,
+                object="chat.completion",
+            )
+
+        return probe_response, is_certain, avg_logprob
 
     async def _run_cot_fork(
         self,
@@ -88,13 +139,15 @@ class AgenticHarness:
                 system_idx = i
                 break
 
+        cot_prompt = COT_FORK_PROMPTS.get(temperature, COT_SYSTEM_PROMPT)
+
         if system_idx >= 0:
             original_content = fork_messages[system_idx].get("content") or ""
             new_sys_msg = dict(fork_messages[system_idx])
-            new_sys_msg["content"] = f"{original_content}\n\n{COT_SYSTEM_PROMPT}"
+            new_sys_msg["content"] = f"{original_content}\n\n{cot_prompt}"
             fork_messages[system_idx] = cast(ChatCompletionMessageParam, new_sys_msg)
         else:
-            fork_messages.insert(0, {"role": "system", "content": COT_SYSTEM_PROMPT})
+            fork_messages.insert(0, {"role": "system", "content": cot_prompt})
 
         fork_kwargs = kwargs.copy()
         fork_kwargs["model"] = BACKEND_MODEL
@@ -227,7 +280,7 @@ class AgenticHarness:
         yield ChatCompletionChunk(
             id="chatcmpl-agentic-stream",
             choices=[
-                Choice(
+                ChunkChoice(
                     delta=ChoiceDelta(content=content_str, role="assistant"),
                     finish_reason=None,
                     index=0,
@@ -241,7 +294,7 @@ class AgenticHarness:
         yield ChatCompletionChunk(
             id="chatcmpl-agentic-stream",
             choices=[
-                Choice(
+                ChunkChoice(
                     delta=ChoiceDelta(content="", role="assistant"),
                     finish_reason="stop",
                     index=0,

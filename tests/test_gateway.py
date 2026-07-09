@@ -1,4 +1,5 @@
 import pytest
+from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 from openai.types.chat import ChatCompletionMessageParam
@@ -16,6 +17,38 @@ def test_config() -> None:
     assert BACKEND_MODEL == "cyankiwi/gemma-4-31B-it-AWQ-4bit"
 
 
+def make_mock_chunk(
+    content: str, top_logprobs_pairs: list[tuple[float, float]] | None = None
+) -> MagicMock:
+    chunk = MagicMock()
+    choice = MagicMock()
+    choice.delta = MagicMock()
+    choice.delta.content = content
+
+    if top_logprobs_pairs is not None:
+        choice.logprobs = MagicMock()
+        token_logprobs = []
+        for p1, p2 in top_logprobs_pairs:
+            tl = MagicMock()
+            tl.token = content
+            tl.logprob = p1
+
+            top1 = MagicMock()
+            top1.logprob = p1
+
+            top2 = MagicMock()
+            top2.logprob = p2
+
+            tl.top_logprobs = [top1, top2]
+            token_logprobs.append(tl)
+        choice.logprobs.content = token_logprobs
+    else:
+        choice.logprobs = None
+
+    chunk.choices = [choice]
+    return chunk
+
+
 @pytest.mark.asyncio
 async def test_agentic_harness_certain() -> None:
     """Verify that when the probe is certain, we exit instantly with the probe's answer."""
@@ -23,19 +56,19 @@ async def test_agentic_harness_certain() -> None:
     mock_completions = AsyncMock()
     mock_openai.chat.completions = mock_completions
 
-    mock_token_logprob = MagicMock()
-    mock_token_logprob.logprob = 0.0  # Above threshold
+    chunks = [
+        make_mock_chunk("Certain", [(0.0, -2.0)]),
+        make_mock_chunk(" answer", [(0.0, -2.5)]),
+    ]
 
-    mock_choice = MagicMock()
-    mock_choice.logprobs = MagicMock()
-    mock_choice.logprobs.content = [mock_token_logprob]
-    mock_choice.message.content = "Certain answer"
+    async def mock_stream(*args: Any, **kwargs: Any) -> Any:
+        async def gen() -> AsyncGenerator[Any, None]:
+            for c in chunks:
+                yield c
 
-    mock_response = MagicMock()
-    mock_response.model = BACKEND_MODEL
-    mock_response.choices = [mock_choice]
+        return gen()
 
-    mock_completions.create.return_value = mock_response
+    mock_completions.create.side_effect = mock_stream
 
     harness = AgenticHarness(client=mock_openai)
     messages: list[ChatCompletionMessageParam] = [{"role": "user", "content": "hello"}]
@@ -45,6 +78,7 @@ async def test_agentic_harness_certain() -> None:
     assert mock_completions.create.call_count == 1
     kwargs = mock_completions.create.call_args.kwargs
     assert kwargs["logprobs"] is True
+    assert kwargs["top_logprobs"] == 2
     assert result.model == AGENT_MODEL_NAME
     assert result.choices[0].message.content == "Certain answer"
 
@@ -56,17 +90,11 @@ async def test_agentic_harness_hesitant() -> None:
     mock_completions = AsyncMock()
     mock_openai.chat.completions = mock_completions
 
-    mock_token_logprob = MagicMock()
-    mock_token_logprob.logprob = -1.5  # Below threshold
-
-    probe_choice = MagicMock()
-    probe_choice.logprobs = MagicMock()
-    probe_choice.logprobs.content = [mock_token_logprob]
-    probe_choice.message.content = "Hesitant draft"
-
-    probe_resp = MagicMock()
-    probe_resp.choices = [probe_choice]
-    probe_resp.model = BACKEND_MODEL
+    # First token has low margin (0.0 - -1.0 = 1.0 <= 1.5)
+    probe_chunks = [
+        make_mock_chunk("Hesitant", [(0.0, -1.0)]),
+        make_mock_chunk(" draft", [(0.0, -1.0)]),
+    ]
 
     fork1_choice = MagicMock()
     fork1_choice.message.content = "Fork A content"
@@ -89,13 +117,21 @@ async def test_agentic_harness_hesitant() -> None:
     consensus_resp.choices = [consensus_choice]
     consensus_resp.model = BACKEND_MODEL
 
-    mock_completions.create.side_effect = [
-        probe_resp,
-        fork1_resp,
-        fork2_resp,
-        fork3_resp,
-        consensus_resp,
-    ]
+    static_responses = [fork1_resp, fork2_resp, fork3_resp, consensus_resp]
+    static_iter = iter(static_responses)
+
+    async def mock_create(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("stream"):
+
+            async def gen() -> AsyncGenerator[Any, None]:
+                for c in probe_chunks:
+                    yield c
+
+            return gen()
+        else:
+            return next(static_iter)
+
+    mock_completions.create.side_effect = mock_create
 
     harness = AgenticHarness(client=mock_openai)
     messages: list[ChatCompletionMessageParam] = [
@@ -116,34 +152,36 @@ async def test_agentic_harness_streaming_certain() -> None:
     mock_completions = AsyncMock()
     mock_openai.chat.completions = mock_completions
 
-    mock_token_logprob = MagicMock()
-    mock_token_logprob.logprob = 0.0
+    chunks = [
+        make_mock_chunk("Stream certain", [(0.0, -2.0)]),
+    ]
 
-    mock_choice = MagicMock()
-    mock_choice.logprobs = MagicMock()
-    mock_choice.logprobs.content = [mock_token_logprob]
-    mock_choice.message.content = "Stream certain"
+    async def mock_stream(*args: Any, **kwargs: Any) -> Any:
+        async def gen() -> AsyncGenerator[Any, None]:
+            for c in chunks:
+                yield c
 
-    mock_response = MagicMock()
-    mock_response.choices = [mock_choice]
-    mock_response.model = BACKEND_MODEL
+        return gen()
 
-    mock_completions.create.return_value = mock_response
+    mock_completions.create.side_effect = mock_stream
 
     harness = AgenticHarness(client=mock_openai)
     messages: list[ChatCompletionMessageParam] = [
         {"role": "user", "content": "stream this"}
     ]
 
-    chunks = []
+    chunks_received = []
     async for chunk in harness.generate_stream(messages=messages):
-        chunks.append(chunk)
+        chunks_received.append(chunk)
 
     assert mock_completions.create.call_count == 1
-    assert len(chunks) > 0
-    assert chunks[-1].choices[0].finish_reason == "stop"
-    assert "".join(c.choices[0].delta.content or "" for c in chunks) == "Stream certain"
-    assert all(c.model == AGENT_MODEL_NAME for c in chunks)
+    assert len(chunks_received) > 0
+    assert chunks_received[-1].choices[0].finish_reason == "stop"
+    assert (
+        "".join(c.choices[0].delta.content or "" for c in chunks_received)
+        == "Stream certain"
+    )
+    assert all(c.model == AGENT_MODEL_NAME for c in chunks_received)
 
 
 @pytest.mark.asyncio
@@ -153,16 +191,9 @@ async def test_agentic_harness_streaming_hesitant() -> None:
     mock_completions = AsyncMock()
     mock_openai.chat.completions = mock_completions
 
-    mock_token_logprob = MagicMock()
-    mock_token_logprob.logprob = -1.5
-
-    probe_choice = MagicMock()
-    probe_choice.logprobs = MagicMock()
-    probe_choice.logprobs.content = [mock_token_logprob]
-    probe_choice.message.content = "Hesitant draft"
-    probe_resp = MagicMock()
-    probe_resp.choices = [probe_choice]
-    probe_resp.model = BACKEND_MODEL
+    probe_chunks = [
+        make_mock_chunk("Hesitant", [(0.0, -1.0)]),
+    ]
 
     fork1_choice = MagicMock()
     fork1_choice.message.content = "A"
@@ -185,31 +216,39 @@ async def test_agentic_harness_streaming_hesitant() -> None:
     consensus_resp.choices = [consensus_choice]
     consensus_resp.model = BACKEND_MODEL
 
-    mock_completions.create.side_effect = [
-        probe_resp,
-        fork1_resp,
-        fork2_resp,
-        fork3_resp,
-        consensus_resp,
-    ]
+    static_responses = [fork1_resp, fork2_resp, fork3_resp, consensus_resp]
+    static_iter = iter(static_responses)
+
+    async def mock_create(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("stream"):
+
+            async def gen() -> AsyncGenerator[Any, None]:
+                for c in probe_chunks:
+                    yield c
+
+            return gen()
+        else:
+            return next(static_iter)
+
+    mock_completions.create.side_effect = mock_create
 
     harness = AgenticHarness(client=mock_openai)
     messages: list[ChatCompletionMessageParam] = [
         {"role": "user", "content": "stream hesitant"}
     ]
 
-    chunks = []
+    chunks_received = []
     async for chunk in harness.generate_stream(messages=messages):
-        chunks.append(chunk)
+        chunks_received.append(chunk)
 
     assert mock_completions.create.call_count == 5
-    assert len(chunks) > 0
-    assert chunks[-1].choices[0].finish_reason == "stop"
+    assert len(chunks_received) > 0
+    assert chunks_received[-1].choices[0].finish_reason == "stop"
     assert (
-        "".join(c.choices[0].delta.content or "" for c in chunks)
+        "".join(c.choices[0].delta.content or "" for c in chunks_received)
         == "Consensus stream answer"
     )
-    assert all(c.model == AGENT_MODEL_NAME for c in chunks)
+    assert all(c.model == AGENT_MODEL_NAME for c in chunks_received)
 
 
 def test_gateway_health_endpoint() -> None:
