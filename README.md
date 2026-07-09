@@ -18,27 +18,14 @@ uv lock
 uv sync --frozen
 ```
 
-## Running the vLLM Server
+## Running the Stack (Server and Router)
 
-The `run_server.sh` script automates environment isolation, applies driver overrides required for RDNA3 hardware, and starts the OpenAI-compatible endpoint.
-
-Execute the server command:
+Execute the unified startup command:
 ```bash
 ./run_server.sh
 ```
 
-This launches the `cyankiwi/gemma-4-31B-it-AWQ-4bit` model utilizing AWQ 4-bit quantization, optimized to consume up to 90% GPU memory allocation.
-
-## Running the Triduum Router
-
-Once the server is running on `http://localhost:8000`, verify the connection and model routing with the asynchronous client orchestrator:
-
-```bash
-uv run main.py
-```
-
-> [!NOTE]
-> Since the Triduum Router serves an OpenAI-compatible API on port `8001`, you can integrate it with any client, SDK, or Web UI that supports OpenAI endpoints (by configuring the API base URL to `http://localhost:8001/v1`).
+Triduum Router will serve an OpenAI-compatible API on port `8001`. You can integrate it with any client, SDK, or Web UI that supports OpenAI endpoints by configuring the API base URL to `http://localhost:8001/v1`.
 
 ## Running the CLI Chat Client
 
@@ -53,4 +40,20 @@ The interactive chat client provides a real-time streaming chat experience and s
 * `/system <prompt>` — Update the system prompt (this will clear and reset session history).
 * `/clear` or `/reset` — Clear the active conversation history.
 * `/quit` or `/exit` — Exit the client.
+
+## Running via Container (Docker/Podman)
+
+A pre-configured `Dockerfile` is provided to package and deploy the entire stack:
+
+```bash
+podman build -t triduum-stack:latest .
+
+podman run --name triduum-test -d \
+  -p 8001:8001 \
+  --device=/dev/kfd --device=/dev/dri \
+  --group-add=video --ipc=host \
+  -e HSA_OVERRIDE_GFX_VERSION=11.0.0 \
+  triduum-stack:latest
+```
+
 
